@@ -18,7 +18,7 @@ class SRCNN:
                  batch_size=128,
                  num_epoches=50000,
                  channels=1,
-                 learning_rate=1e-4
+                 learning_rate=1e-4,
                  checkpoint_dir=None,
                  sample_dir=None):
         
@@ -30,10 +30,14 @@ class SRCNN:
         self.stride = 14
         self.batch_size = batch_size
 
+        self.num_epoches = num_epoches
         self.channels = channels
+        self.learning_rate = learning_rate
 
         self.checkpoint_dir = checkpoint_dir
         self.sample_dir = sample_dir
+        
+        self.build_model()
 
 
     # As per article, the model is configured as below:
@@ -74,25 +78,26 @@ class SRCNN:
         self.loss = tf.reduce_mean(tf.square(self.labels - self.predict))
         
         # Saver for checkpoints
-        self.savers = tf.train.Saver()
+        self.saver = tf.train.Saver()
 
 
     #
     # Train model
     #
-    def train(self, data, label):
+    def train(self, data, label, verbose=False):
         
+        loss_hist = []
 
         # Use Adam gradient descent
-        optimizer = tf.train.AdmamOptimizer(lr).minimize(self.loss)
+        optimizer = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
         
-        tf.initialize_all_variables().run()
+        tf.global_variables_initializer().run()
         
         # Start Training
         counter = 0
         start_time = time.time()
         
-        for epoch in range(num_epochs):
+        for epoch in range(self.num_epoches):
             
             num_batches = data.shape[0] // self.batch_size
             
@@ -105,12 +110,16 @@ class SRCNN:
                 counter += 1
                 _, err = self.sess.run([optimizer, self.loss], feed_dict={self.images: batch_images, self.labels: batch_labels})
                 
-                if counter % 1000 == 0:
-                    print("Epoch: %2d, step: %2d, time: %4.4f, loss: %.8f" % ((epoch+1), counter, time.time-start_time, err))
+                if counter % 200 == 0:
+                    loss_hist.append(err)
+
+                if verbose and counter % 2000 == 0:
+                    print("Epoch: %2d, step: %2d, loss: %.8f" % ((epoch+1), counter, (err*10000)))
 
                 if counter % 5000 == 0:
-                    self.saver.save(self.sess, os.path.join(self.checkpoint_dir, "SRCNN.model"), global_step=counter)
+                    self.saver.save(self.sess, os.path.join(self.checkpoint_dir, "srcnn.model"), global_step=counter)
 
+        return loss_hist
 
                     
     #
@@ -129,7 +138,7 @@ class SRCNN:
     #
     def load_checkpoint(self, checkpoint):
         
-        #ckpt_dir = os.path.join(
+        ckpt_dir = os.path.join(checkpoint_dir, 'srcnn.model')
         
 
 
@@ -158,12 +167,11 @@ class SRCNN:
         for filename in os.listdir(dataset_dir):
             
             path = os.path.join(dataset_dir, filename)
-            image = (scipy.misc.imread(path, flatten=True, mode='YCbCr').astype(np.float) - pixel_depth/2)/pixel_depth
+            image = (ndimage.imread(path, flatten=True, mode='YCbCr').astype(np.float) - pixel_depth/2)/pixel_depth
             #if is_grayscale:
             #else:
-            #    image = (scipy.misc.imread(path, mode='YCbCr').astype(np.float) - pixel_depth/2)/pixel_depth
+            #    image = (ndimage.imread(path, mode='YCbCr').astype(np.float) - pixel_depth/2)/pixel_depth
 
-            label_ = self.modcrop(image, self.scale)
             if len(image.shape) == 3:
                 h, w, _ = image.shape
                 h = h - np.mod(h, self.scale)
