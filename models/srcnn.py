@@ -13,11 +13,10 @@ class SRCNN:
                  sess,
                  image_size=33,
                  label_size=21,
-                 scale = 3,
-                 stride = 14,
                  batch_size=128,
                  num_epoches=50000,
                  channels=1,
+                 stddev=1e-3,
                  learning_rate=1e-4,
                  checkpoint_dir=None,
                  sample_dir=None):
@@ -26,13 +25,12 @@ class SRCNN:
         self.is_grayscale = (channels == 1)
         self.image_size = image_size
         self.label_size = label_size
-        self.scale = scale
-        self.stride = 14
         self.batch_size = batch_size
 
         self.num_epoches = num_epoches
         self.channels = channels
         self.learning_rate = learning_rate
+        self.stddev = stddev
 
         self.checkpoint_dir = checkpoint_dir
         self.sample_dir = sample_dir
@@ -53,29 +51,29 @@ class SRCNN:
     def build_model(self):
 
         # Initialize inputs and parameters
-        self.images = tf.placeholder(tf.float32, [self.batch_size, self.image_size, self.image_size, self.channels], name='images')
-        self.labels = tf.placeholder(tf.float32, [self.batch_size, self.label_size, self.label_size, self.channels], name='labels')
+        self.images = tf.placeholder(tf.float32, [None, self.image_size, self.image_size, self.channels], name='images')
+        self.labels = tf.placeholder(tf.float32, [None, self.label_size, self.label_size, self.channels], name='labels')
         
         self.weights = {
-            'w1': tf.Variable(tf.random_normal([9, 9, 1, 64], stddev=1e-3), name='w1'),
-            'w2': tf.Variable(tf.random_normal([1, 1, 64, 32], stddev=1e-3), name='w2'),
-            'w3': tf.Variable(tf.random_normal([5, 5, 32, 1], stddev=1e-3), name='w3')
+            'w1': tf.Variable(tf.random_normal([9, 9, self.channels, 64], stddev=self.stddev), name='w1'),
+            'w2': tf.Variable(tf.random_normal([1, 1, 64, 32], stddev=self.stddev), name='w2'),
+            'w3': tf.Variable(tf.random_normal([5, 5, 32, self.channels], stddev=self.stddev), name='w3')
         }
         self.biases = {
             'b1': tf.Variable(tf.zeros([64]), name='b1'),
             'b2': tf.Variable(tf.zeros([32]), name='b2'),
-            'b3': tf.Variable(tf.zeros([1]), name='b3')
+            'b3': tf.Variable(tf.zeros([self.channels]), name='b3')
         }
         
         # CNN
-        layer1 = tf.nn.relu(tf.nn.conv2d(self.images, self.weights['w1'], strides=[1,1,1,1], padding='VALID') + self.biases['b1'])
-        layer2 = tf.nn.relu(tf.nn.conv2d(layer1, self.weights['w2'], strides=[1,1,1,1], padding='VALID') + self.biases['b2'])
-        layer3 = tf.nn.conv2d(layer2, self.weights['w3'], strides=[1,1,1,1], padding='VALID') + self.biases['b3']
+        self.layer1 = tf.nn.relu(tf.nn.conv2d(self.images, self.weights['w1'], strides=[1,1,1,1], padding='VALID') + self.biases['b1'])
+        self.layer2 = tf.nn.relu(tf.nn.conv2d(self.layer1, self.weights['w2'], strides=[1,1,1,1], padding='VALID') + self.biases['b2'])
+        layer3 = tf.nn.conv2d(self.layer2, self.weights['w3'], strides=[1,1,1,1], padding='VALID') + self.biases['b3']
         
-        self.predict = layer3
+        self.pred = layer3
         
         # Loss function
-        self.loss = tf.reduce_mean(tf.square(self.labels - self.predict))
+        self.loss = tf.reduce_mean(tf.square(self.labels - self.pred))
         
         # Saver for checkpoints
         self.saver = tf.train.Saver()
@@ -84,12 +82,16 @@ class SRCNN:
     #
     # Train model
     #
-    def train(self, data, label, verbose=False):
+    def train(self, image, label, verbose=False):
         
         loss_hist = []
 
+        step = tf.Variable(0, trainable=False)
+        rate = tf.train.exponential_decay(self.learning_rate, step, 1, 0.9997)
+        
         # Use Adam gradient descent
-        optimizer = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
+        optimizer = tf.train.AdamOptimizer(rate).minimize(self.loss, global_step=step)
+        #optimizer = tf.train.GradientDescentOptimizer(rate).minimize(self.loss, global_step=step)
         
         tf.global_variables_initializer().run()
         
@@ -99,12 +101,12 @@ class SRCNN:
         
         for epoch in range(self.num_epoches):
             
-            num_batches = data.shape[0] // self.batch_size
+            num_batches = image.shape[0] // self.batch_size
             
-            for step in range(num_batches):
+            for batch in range(num_batches):
                 
-                offset = step * self.batch_size
-                batch_images = data[offset:(offset+self.batch_size), :, : ,:]
+                offset = batch * self.batch_size
+                batch_images = image[offset:(offset+self.batch_size), :, : ,:]
                 batch_labels = label[offset:(offset+self.batch_size), :]
                 
                 counter += 1
@@ -125,9 +127,9 @@ class SRCNN:
     #
     # Use current session to predict
     #
-    def predict(self):
-        
-        result = self.predict.eval({self.images: None, self.labels: None})
+    def predict(self, image):
+        pred, weights = self.sess.run([self.pred, self.weights], feed_dict={self.images: image})
+        return pred, weights
 
         
     #
@@ -137,82 +139,23 @@ class SRCNN:
     #        checkpoint: number of checkpoint
     #
     def load_checkpoint(self, checkpoint):
-        
-        ckpt_dir = os.path.join(checkpoint_dir, 'srcnn.model')
-        
 
+        #ckpt_dir = os.path.join(checkpoint_dir, 'srcnn.model-' + checkpoint)
+        ckpt = tf.train.get_checkpoint_state(self.checkpoint_dir)
 
-    def load_data(self, is_train=True):
-        
-        if is_train:
-            path = os.path.join(self.checkpoint_dir, 'train.pickle')
+        if ckpt and ckpt.model_checkpoint_path:
+            ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+
+            print(os.path.join(self.checkpoint_dir, ckpt_name))
+
+            self.saver.restore(self.sess, os.path.join(self.checkpoint_dir, ckpt_name))
+            return True
         else:
-            path = os.path.join(self.checkpoint_dir, 'validate.pickle')
+            return False
 
-        with open(path, 'rb') as f:
-            dataset = pickle.load(f)
-            input_ = dataset['data']
-            label_ = dataset['labels']
-
-        return input_, label_
         
     
-    def preprocess(self, dataset_dir, is_train=True):
-        
-        sub_input_sequence = []
-        sub_label_sequence = []
-        padding = abs(self.image_size - self.label_size)
-        pixel_depth = 255.0
-
-        for filename in os.listdir(dataset_dir):
-            
-            path = os.path.join(dataset_dir, filename)
-            image = (ndimage.imread(path, flatten=True, mode='YCbCr').astype(np.float) - pixel_depth/2)/pixel_depth
-            #if is_grayscale:
-            #else:
-            #    image = (ndimage.imread(path, mode='YCbCr').astype(np.float) - pixel_depth/2)/pixel_depth
-
-            if len(image.shape) == 3:
-                h, w, _ = image.shape
-                h = h - np.mod(h, self.scale)
-                w = w - np.mod(w, self.scale)
-                image = image[0:h, 0:w, :]
-            else:
-                h, w = image.shape
-                h = h - np.mod(h, self.scale)
-                w = w - np.mod(w, self.scale)
-                image = image[0:h, 0:w]
-            
-            label_ = image
-            input_ = ndimage.interpolation.zoom(label_, (1./self.scale), prefilter=False)
-            input_ = ndimage.interpolation.zoom(input_, self.scale, prefilter=False)
-            
-            for x in range(0, h-self.image_size+1, self.stride):
-                for y in range(0, w-self.image_size+1, self.stride):
-                    sub_input = input_[x:x+self.image_size, y:y+self.image_size] # [33 x 33]
-                    sub_label = label_[x+int(padding):x+int(padding)+self.label_size, y+int(padding):y+int(padding)+self.label_size] # [21 x 21]
-
-                    # Make channel value
-                    sub_input = sub_input.reshape([self.image_size, self.image_size, 1])  
-                    sub_label = sub_label.reshape([self.label_size, self.label_size, 1])
-
-                    sub_input_sequence.append(sub_input)
-                    sub_label_sequence.append(sub_label)
-
-        arrdata = np.asarray(sub_input_sequence) # [?, 33, 33, 1]
-        arrlabel = np.asarray(sub_label_sequence) # [?, 21, 21, 1]
-        
-        if is_train:
-            savepath = os.path.join(self.checkpoint_dir, 'train.pickle')
-        else:
-            savepath = os.path.join(self.checkpoint_dir, 'validate.pickle')
-        
-        with open(savepath, 'wb') as f:
-            pickle.dump({'data': arrdata,
-                         'labels': arrlabel}, f, pickle.HIGHEST_PROTOCOL)
-            f.close()
-        
-        return arrdata, arrlabel
+    
 
         
         
