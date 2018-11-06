@@ -1,5 +1,6 @@
 import tensorflow as tf
-import keras
+from tensorflow.keras.layers import Layer
+import tensorflow.keras as keras
 
 class SubpixelConv2D(Layer):
     """
@@ -14,13 +15,13 @@ class SubpixelConv2D(Layer):
     :return:
     """
     
-    def __init__(self, scale=2, actitvation=None, **kwargs):
+    def __init__(self, scale=2, activation=None, **kwargs):
         super(SubpixelConv2D, self).__init__(**kwargs)
         self.scale = scale
         self.activation = keras.activations.get(activation)
 
     def build(self, input_shape):
-        
+        super(SubpixelConv2D, self).build(input_shape)
         
     def call(self, inputs):
         outputs = tf.depth_to_space(inputs, self.scale)
