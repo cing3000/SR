@@ -6,6 +6,7 @@ __pycache__/
 # Datasets
 checkpoints/
 datasets/*
+samples/
 !datasets/*.ipynb
 
 # C extensions

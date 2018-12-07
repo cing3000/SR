@@ -1,10 +1,11 @@
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import losses
-from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Add, LeakyReLU, Flatten, Dense, Lambda
+from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Activation, Add, LeakyReLU, Flatten, Dense, Lambda, UpSampling2D
 from tensorflow.python.keras.engine.network import Network
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.applications.vgg19 import VGG19
+import numpy as np
 import tensorflow as tf
 
 from models.subpixel import SubpixelConv2D
@@ -27,16 +28,16 @@ class SRGAN:
         # Optimizers
         optimizer_vgg = Adam(1e-4)
         optimizer_generator = Adam(gen_lr)
-        optimizer_discriminator = Adam(dis_lr)
-        optimizer_gan = Adam(gan_lr)
+        #optimizer_discriminator = Adam(dis_lr)
+        #optimizer_gan = Adam(gan_lr)
         
         # Build models
-        with tf.device('/gpu:1'):
-            self.vgg = self.model_vgg(optimizer_vgg)
+        #with tf.device('/gpu:1'):
+        #    self.vgg = self.model_vgg(optimizer_vgg)
 
         self.generator = self.model_g(optimizer_generator)
-        self.discriminator, self.frozen_d = self.model_d(optimizer_discriminator)
-        self.srgan = self.model_gan(optimizer_gan)
+        #self.discriminator, self.frozen_d = self.model_d(optimizer_discriminator)
+        #self.srgan = self.model_gan(optimizer_gan)
 
     def model_g(self, optimizer, residual_blocks=16):
         
@@ -53,37 +54,39 @@ class SRGAN:
         # B residual blocks
         for i in range(residual_blocks):
 
-            nn = Conv2D(64, (3, 3), (1, 1), 'same', use_bias=False, kernel_initializer=k_init, name='n64s1/c1/%s' % i)(n)
-            nn = BatchNormalization(gamma_initializer=g_init, name='n64s1/b1/%s' % i)(nn)
+            nn = Conv2D(64, (3, 3), (1, 1), 'same', name='n64s1/c1/%s' % i)(n)
+            nn = BatchNormalization(name='n64s1/b1/%s' % i)(nn)
             nn = Activation('relu')(nn)
 
-            nn = Conv2D(64, (3, 3), (1, 1), 'same', use_bias=False, kernel_initializer=k_init, name='n64s1/c2/%s' % i)(nn)
-            nn = BatchNormalization(gamma_initializer=g_init, name='n64s1/b2/%s' % i)(nn)
+            nn = Conv2D(64, (3, 3), (1, 1), 'same', name='n64s1/c2/%s' % i)(nn)
+            nn = BatchNormalization(name='n64s1/b2/%s' % i)(nn)
             nn = Activation('relu')(nn)
 
-            nn = Add(name='b_residual_add/%s' % i)([n, nn])
+            n = Add(name='b_residual_add/%s' % i)([n, nn])
 
-            n = nn
-
-        n = Conv2D(64, (3, 3), (1, 1), 'same', use_bias=False, kernel_initializer=k_init, name='n64s1/c/m')(n)
-        n = BatchNormalization(gamma_initializer=g_init, name='n64s1/c/bn')(n)
+        n = Conv2D(64, (3, 3), (1, 1), 'same', name='n64s1/c/m')(n)
+        n = BatchNormalization(name='n64s1/c/bn')(n)
         n = Add(name='add3')([n, temp])
 
-        n = Conv2D(256, (3, 3), (1, 1), 'same', use_bias=False, kernel_initializer=k_init, name='n256s1/1')(n)
-        n = SubpixelConv2D(scale=2, activation='relu', name='pixelshufflerx2/1')(n)
+        #n = Conv2D(256, (3, 3), (1, 1), 'same', use_bias=False, kernel_initializer=k_init, name='n256s1/1')(n)
+        #n = SubpixelConv2D(scale=2, activation='relu', name='pixelshufflerx2/1')(n)
 
-        n = Conv2D(64, (3, 3), (1, 1), 'same', use_bias=False, kernel_initializer=k_init, name='n256s1/2')(n)
-        n = SubpixelConv2D(scale=2, activation='relu', name='pixelshufflerx2/2')(n)
+        #n = Conv2D(64, (3, 3), (1, 1), 'same', use_bias=False, kernel_initializer=k_init, name='n256s1/2')(n)
+        #n = SubpixelConv2D(scale=2, activation='relu', name='pixelshufflerx2/2')(n)
+        
+        for i in range(int(np.log(self.r) / np.log(2))):
+            n = UpSampling2D(size=2)(n)
+            n = Conv2D(256, (3,3), (1,1), padding='same', activation='relu')(n)
 
-        n = Conv2D(3, (1, 1), (1, 1), 'same', activation='tanh', kernel_initializer=k_init, name='out')(n)
+        n = Conv2D(3, (3, 3), (1, 1), 'same', activation='tanh', kernel_initializer=k_init, name='out')(n)
         
         # Create model and compile
         model = Model(inputs=n_input, outputs=n)
-        model.compile(loss='binary_crossentropy', optimizer=optimizer)
+        model.compile(loss='mse', optimizer=optimizer)
 
         return model
 
-    def model_d(self, optimizer, filters=64):
+    def model_d(self, optimizer, filters=16):
         
         # Initializators
         k_init = RandomNormal(stddev=0.02)
@@ -144,7 +147,7 @@ class SRGAN:
 
         # Create model and compile
         model = Model(inputs=n_input, outputs=n)
-        model.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
+        model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
         
         # Fixed model for gan
         frozen_model = Network(inputs=n_input, outputs=n)
@@ -155,14 +158,15 @@ class SRGAN:
     # VGG19 network
     def model_vgg(self, optimizer):
         
-        n_input = Input(shape=(224, 224, 3))
+        n_input = Input(shape=self.hr_shape)
+        n = Lambda(lambda x: tf.image.resize_images(x, size=[224, 224], method=0, align_corners=False))(n_input)
         
         # Get the vgg network, extract features from last conv layer
         vgg = VGG19(pooling='max')
         vgg.outputs = [vgg.layers[16].output]
         
         #Create model and compile
-        model = Model(inputs=n_input, outputs=vgg(n_input))
+        model = Model(inputs=n_input, outputs=vgg(n))
         model.trainable = False
         model.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
         
@@ -178,8 +182,7 @@ class SRGAN:
         generated_hr = self.generator(img_lr)
         
         # Extract features using VGG
-        resized_hr = Lambda(lambda x: tf.image.resize_images(x, size=[224, 224], method=0, align_corners=False))(generated_hr)
-        generated_features = self.vgg(resized_hr)
+        generated_features = self.vgg(generated_hr)
         
         # Run discriminator on generated high resolution image
         generated_check = self.frozen_d(generated_hr)
@@ -188,7 +191,7 @@ class SRGAN:
         model = Model(inputs=img_lr, outputs=[generated_check, generated_features, generated_hr])
         model.compile(
             loss=['binary_crossentropy', 'mse', 'mse'],
-            loss_weights=[1e-3, 2e-6, 1],
+            loss_weights=[1e-3, 5e-4, 1],
             optimizer=optimizer
         )
         
